@@ -2,8 +2,14 @@ package geecache
 
 import (
 	"fmt"
+	"geecache/singleflight"
 	"log"
 	"sync"
+)
+
+var (
+	mu     sync.RWMutex
+	groups = make(map[string]*Group)
 )
 
 // A Group is a cache namespace and associated data loaded spread over
@@ -12,6 +18,7 @@ type Group struct {
 	getter    Getter
 	mainCache cache
 	peers     PeerPicker
+	loader    *singleflight.Group
 }
 
 // A Getter loads data for a key.
@@ -27,11 +34,6 @@ func (f GetterFunc) Get(key string) ([]byte, error) {
 	return f(key)
 }
 
-var (
-	mu     sync.RWMutex
-	groups = make(map[string]*Group)
-)
-
 // NewGroup create a new instance of Group
 func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 	if getter == nil {
@@ -43,6 +45,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 		name:      name,
 		getter:    getter,
 		mainCache: cache{cacheBytes: cacheBytes},
+		loader:    &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -80,28 +83,25 @@ func (g *Group) RegisterPeers(peers PeerPicker) {
 }
 
 func (g *Group) load(key string) (value ByteView, err error) {
-	if g.peers != nil {
-		//查询group的PeerPicker,用PickPeer方法，根据key去寻找对应的PeerGetter,PeerGetter有Get方法，输入group和key返回value
-		//初始化group时，RegisterPeer(peers)为gee添加了HTTPPool这个PeerPicker
-		//g.peers.PickPeer(key) 查找 HTTPPool的Map,在哈希环映射里，通过key返回一个PeerGetter（实现了Get方法）
-		if peer, ok := g.peers.PickPeer(key); ok {
-			// g.getFromPeer从对应的PeerGetter ,调用 peerGetter的Get方法，从gee.name和key拼接出url
-			// u := fmt.Sprintf(
-			//		"%v%v/%v",
-			//		h.baseURL,
-			//		url.QueryEscape(group),
-			//		url.QueryEscape(key),
-			//	)
-			// 即是u := peer.baseURL /score/key
-
-			if value, err = g.getFromPeer(peer, key); err == nil {
-				return value, nil
+	// each key is only fetched once (either locally or remotely)
+	// regardless of the number of concurrent callers.
+	viewi, err := g.loader.Do(key, func() (interface{}, error) {
+		if g.peers != nil {
+			if peer, ok := g.peers.PickPeer(key); ok {
+				if value, err = g.getFromPeer(peer, key); err == nil {
+					return value, nil
+				}
+				log.Println("[GeeCache] Failed to get from peer", err)
 			}
-			log.Println("[GeeCache] Failed to get from peer", err)
 		}
+
+		return g.getLocally(key)
+	})
+
+	if err == nil {
+		return viewi.(ByteView), nil
 	}
-	//从数据库加载key,返回value，加入本地缓存
-	return g.getLocally(key)
+	return
 }
 
 func (g *Group) populateCache(key string, value ByteView) {
