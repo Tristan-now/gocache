@@ -72,13 +72,16 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // Set updates the pool's list of peers.
+// 为HTTPPool设置 key到httpGetter 的 map映射
 func (p *HTTPPool) Set(peers ...string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.peers = consistenthash.New(defaultReplicas, nil)
+	//Add：在哈希环里注册所有peers节点和衍生节点
 	p.peers.Add(peers...)
 	p.httpGetters = make(map[string]*httpGetter, len(peers))
 	for _, peer := range peers {
+		// http://localhost:8001 + /_geecache/
 		p.httpGetters[peer] = &httpGetter{baseURL: peer + p.basePath}
 	}
 }
@@ -87,6 +90,7 @@ func (p *HTTPPool) Set(peers ...string) {
 func (p *HTTPPool) PickPeer(key string) (PeerGetter, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	//Map.Get方法在哈希环里寻找匹配的peer节点，判断peer != "" 并且 peer 不等于自己
 	if peer := p.peers.Get(key); peer != "" && peer != p.self {
 		p.Log("Pick peer %s", peer)
 		return p.httpGetters[peer], true
@@ -107,6 +111,7 @@ func (h *httpGetter) Get(group string, key string) ([]byte, error) {
 		url.QueryEscape(group),
 		url.QueryEscape(key),
 	)
+	fmt.Println("此时拼接的url = ", u)
 	res, err := http.Get(u)
 	if err != nil {
 		return nil, err

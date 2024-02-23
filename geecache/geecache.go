@@ -62,12 +62,12 @@ func (g *Group) Get(key string) (ByteView, error) {
 	if key == "" {
 		return ByteView{}, fmt.Errorf("key is required")
 	}
-
+	//首先查找本地缓存有没有key,有则缓存命中
 	if v, ok := g.mainCache.get(key); ok {
 		log.Println("[GeeCache] hit")
 		return v, nil
 	}
-
+	//缓存未命中则向其他服务端发起请求
 	return g.load(key)
 }
 
@@ -81,14 +81,26 @@ func (g *Group) RegisterPeers(peers PeerPicker) {
 
 func (g *Group) load(key string) (value ByteView, err error) {
 	if g.peers != nil {
+		//查询group的PeerPicker,用PickPeer方法，根据key去寻找对应的PeerGetter,PeerGetter有Get方法，输入group和key返回value
+		//初始化group时，RegisterPeer(peers)为gee添加了HTTPPool这个PeerPicker
+		//g.peers.PickPeer(key) 查找 HTTPPool的Map,在哈希环映射里，通过key返回一个PeerGetter（实现了Get方法）
 		if peer, ok := g.peers.PickPeer(key); ok {
+			// g.getFromPeer从对应的PeerGetter ,调用 peerGetter的Get方法，从gee.name和key拼接出url
+			// u := fmt.Sprintf(
+			//		"%v%v/%v",
+			//		h.baseURL,
+			//		url.QueryEscape(group),
+			//		url.QueryEscape(key),
+			//	)
+			// 即是u := peer.baseURL /score/key
+
 			if value, err = g.getFromPeer(peer, key); err == nil {
 				return value, nil
 			}
 			log.Println("[GeeCache] Failed to get from peer", err)
 		}
 	}
-
+	//从数据库加载key,返回value，加入本地缓存
 	return g.getLocally(key)
 }
 
